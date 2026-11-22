@@ -1,0 +1,24 @@
+[package]
+name = "mi-merge"
+version = "0.1.0"
+edition = "2021"
+description = "Lightweight, fast Windows CLI tool that merges video clips end to end with chapters and automatic pillarboxing."
+license = "MIT"
+repository = "https://github.com/mimidabu/mi-merge"
+
+[[bin]]
+name = "mi-merge"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
