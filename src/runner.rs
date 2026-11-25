@@ -26,7 +26,13 @@ pub fn run(cli: &Cli) -> Result<()> {
         clips.push(info);
     }
 
-    let plan = MergePlan::build(clips, cli.resolution, cli.fps, cli.encoder)?;
+    let plan = MergePlan::build(
+        clips,
+        cli.resolution,
+        cli.fps,
+        cli.encoder,
+        cli.chapters,
+    )?;
 
     if cli.dry_run {
         print_dry_run(&tools.ffmpeg, &plan, &cli.output, cli.overwrite)?;
@@ -50,14 +56,18 @@ fn print_dry_run(
     println!("Mode:       {mode_label}");
     println!("Target:     {} @ {} fps", plan.target_resolution, plan.target_fps);
     println!("Clips:      {}", plan.clips.len());
-    for (i, ch) in plan.chapters.iter().enumerate() {
-        println!(
-            "  [{:02}] {:>7}ms .. {:>7}ms  {}",
-            i + 1,
-            ch.start_ms,
-            ch.end_ms,
-            ch.title
-        );
+    if plan.ffmetadata.is_some() {
+        for (i, ch) in plan.chapters.iter().enumerate() {
+            println!(
+                "  [{:02}] {:>7}ms .. {:>7}ms  {}",
+                i + 1,
+                ch.start_ms,
+                ch.end_ms,
+                ch.title
+            );
+        }
+    } else {
+        println!("Chapters:   disabled");
     }
 
     let fake_concat = Path::new("concat_list.txt");
@@ -67,8 +77,13 @@ fn print_dry_run(
     } else {
         None
     };
+    let meta_opt = if plan.ffmetadata.is_some() {
+        Some(fake_meta)
+    } else {
+        None
+    };
 
-    let args = plan.build_ffmpeg_args(concat_opt, fake_meta, output_path, overwrite)?;
+    let args = plan.build_ffmpeg_args(concat_opt, meta_opt, output_path, overwrite)?;
     println!("\nFFmpeg command:");
     println!("{}", format_command_line(ffmpeg_path, &args));
 
@@ -81,11 +96,22 @@ pub fn execute_plan(
     output_path: &Path,
     overwrite: bool,
 ) -> Result<()> {
-    let mut meta_file = NamedTempFile::new().context("failed to create temporary metadata file")?;
-    meta_file
-        .write_all(plan.ffmetadata.as_bytes())
-        .context("failed to write ffmetadata file")?;
-    meta_file.flush()?;
+    let _meta_guard: Option<NamedTempFile>;
+    let meta_path_buf;
+    let meta_opt = if let Some(ref ffmetadata) = plan.ffmetadata {
+        let mut meta_file =
+            NamedTempFile::new().context("failed to create temporary metadata file")?;
+        meta_file
+            .write_all(ffmetadata.as_bytes())
+            .context("failed to write ffmetadata file")?;
+        meta_file.flush()?;
+        meta_path_buf = meta_file.path().to_path_buf();
+        _meta_guard = Some(meta_file);
+        Some(meta_path_buf.as_path())
+    } else {
+        _meta_guard = None;
+        None
+    };
 
     let _concat_guard: Option<NamedTempFile>;
     let concat_path_buf;
@@ -105,7 +131,7 @@ pub fn execute_plan(
         None
     };
 
-    let args = plan.build_ffmpeg_args(concat_opt, meta_file.path(), output_path, overwrite)?;
+    let args = plan.build_ffmpeg_args(concat_opt, meta_opt, output_path, overwrite)?;
 
     let status = Command::new(ffmpeg_path)
         .args(&args)

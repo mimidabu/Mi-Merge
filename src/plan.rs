@@ -18,7 +18,7 @@ pub struct MergePlan {
     pub encoder: Encoder,
     pub clips: Vec<ClipInfo>,
     pub chapters: Vec<Chapter>,
-    pub ffmetadata: String,
+    pub ffmetadata: Option<String>,
     pub filter_complex: Option<String>,
 }
 
@@ -28,6 +28,7 @@ impl MergePlan {
         resolution_override: Option<Resolution>,
         fps_override: Option<Fps>,
         encoder: Encoder,
+        include_chapters: bool,
     ) -> Result<Self> {
         if clips.is_empty() {
             bail!("cannot build merge plan with zero clips");
@@ -55,8 +56,13 @@ impl MergePlan {
             MergeMode::Transcode
         };
 
-        let chapters = build_chapters(&clips);
-        let ffmetadata = render_ffmetadata(&chapters);
+        let (chapters, ffmetadata) = if include_chapters {
+            let ch = build_chapters(&clips);
+            let meta = render_ffmetadata(&ch);
+            (ch, Some(meta))
+        } else {
+            (Vec::new(), None)
+        };
 
         let filter_complex = match mode {
             MergeMode::FastCopy => None,
@@ -80,7 +86,7 @@ impl MergePlan {
     pub fn build_ffmpeg_args(
         &self,
         concat_list_path: Option<&Path>,
-        metadata_path: &Path,
+        metadata_path: Option<&Path>,
         output_path: &Path,
         overwrite: bool,
     ) -> Result<Vec<String>> {
@@ -99,16 +105,25 @@ impl MergePlan {
                     "0".into(),
                     "-i".into(),
                     list_path.to_string_lossy().into_owned(),
-                    "-i".into(),
-                    metadata_path.to_string_lossy().into_owned(),
+                ]);
+                if let Some(meta_path) = metadata_path {
+                    args.extend(["-i".into(), meta_path.to_string_lossy().into_owned()]);
+                }
+                args.extend([
                     "-map".into(),
                     "0:v:0".into(),
                     "-map".into(),
                     "0:a:0?".into(),
-                    "-map_metadata".into(),
-                    "1".into(),
-                    "-map_chapters".into(),
-                    "1".into(),
+                ]);
+                if metadata_path.is_some() {
+                    args.extend([
+                        "-map_metadata".into(),
+                        "1".into(),
+                        "-map_chapters".into(),
+                        "1".into(),
+                    ]);
+                }
+                args.extend([
                     "-c".into(),
                     "copy".into(),
                     "-movflags".into(),
@@ -122,8 +137,10 @@ impl MergePlan {
                     args.push(clip.path.to_string_lossy().into_owned());
                 }
                 let meta_idx = self.clips.len();
-                args.push("-i".into());
-                args.push(metadata_path.to_string_lossy().into_owned());
+                if let Some(meta_path) = metadata_path {
+                    args.push("-i".into());
+                    args.push(meta_path.to_string_lossy().into_owned());
+                }
 
                 let fc = self.filter_complex.as_ref().ok_or_else(|| {
                     anyhow::anyhow!("internal error: filter_complex missing for transcode mode")
@@ -136,11 +153,15 @@ impl MergePlan {
                     "[vout]".into(),
                     "-map".into(),
                     "[aout]".into(),
-                    "-map_metadata".into(),
-                    meta_idx.to_string(),
-                    "-map_chapters".into(),
-                    meta_idx.to_string(),
                 ]);
+                if metadata_path.is_some() {
+                    args.extend([
+                        "-map_metadata".into(),
+                        meta_idx.to_string(),
+                        "-map_chapters".into(),
+                        meta_idx.to_string(),
+                    ]);
+                }
 
                 args.extend(self.encoder.ffmpeg_args());
 
@@ -346,7 +367,7 @@ mod tests {
             make_clip("a", 1920, 1080, 0, 30, true),
             make_clip("b", 1920, 1080, 0, 30, true),
         ];
-        let plan = MergePlan::build(clips, None, None, Encoder::X264).unwrap();
+        let plan = MergePlan::build(clips, None, None, Encoder::X264, true).unwrap();
         assert_eq!(plan.mode, MergeMode::FastCopy);
         assert_eq!(
             plan.target_resolution,
@@ -357,6 +378,29 @@ mod tests {
         );
         assert_eq!(plan.target_fps, Fps { num: 30, den: 1 });
         assert!(plan.filter_complex.is_none());
+        assert!(plan.ffmetadata.is_some());
+    }
+
+    #[test]
+    fn no_chapters_omits_metadata_and_map_chapters() {
+        let clips = vec![
+            make_clip("a", 1920, 1080, 0, 30, true),
+            make_clip("b", 1920, 1080, 0, 30, true),
+        ];
+        let plan = MergePlan::build(clips, None, None, Encoder::X264, false).unwrap();
+        assert!(plan.chapters.is_empty());
+        assert!(plan.ffmetadata.is_none());
+
+        let args = plan
+            .build_ffmpeg_args(
+                Some(Path::new("list.txt")),
+                None,
+                Path::new("out.mp4"),
+                true,
+            )
+            .unwrap();
+        assert!(!args.contains(&"-map_chapters".to_string()));
+        assert!(!args.contains(&"-map_metadata".to_string()));
     }
 
     #[test]
@@ -365,7 +409,7 @@ mod tests {
             make_clip("vertical_first", 1080, 1920, 0, 60, true),
             make_clip("landscape_second", 1280, 720, 0, 30, true),
         ];
-        let plan = MergePlan::build(clips, None, None, Encoder::X264).unwrap();
+        let plan = MergePlan::build(clips, None, None, Encoder::X264, true).unwrap();
         assert_eq!(plan.mode, MergeMode::Transcode);
         assert_eq!(
             plan.target_resolution,
@@ -389,13 +433,18 @@ mod tests {
             make_clip("with_audio", 1280, 720, 0, 30, true),
             make_clip("silent", 1280, 720, 0, 30, false),
         ];
-        let plan = MergePlan::build(clips, None, None, Encoder::Nvenc).unwrap();
+        let plan = MergePlan::build(clips, None, None, Encoder::Nvenc, true).unwrap();
         assert_eq!(plan.mode, MergeMode::Transcode);
         let fc = plan.filter_complex.as_ref().unwrap();
         assert!(fc.contains("anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration=2.000000"));
 
         let args = plan
-            .build_ffmpeg_args(None, Path::new("meta.txt"), Path::new("out.mp4"), true)
+            .build_ffmpeg_args(
+                None,
+                Some(Path::new("meta.txt")),
+                Path::new("out.mp4"),
+                true,
+            )
             .unwrap();
         assert!(args.contains(&"h264_nvenc".to_string()));
         assert!(args.contains(&"-map_chapters".to_string()));

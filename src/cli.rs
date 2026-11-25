@@ -28,6 +28,14 @@ pub struct Cli {
     #[arg(long = "dry-run")]
     pub dry_run: bool,
 
+    /// Add one chapter per clip (titled with filename without extension)
+    #[arg(
+        long = "chapters",
+        env = "MI_MERGE_CHAPTERS",
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
+    pub chapters: bool,
+
     /// Override output resolution (e.g. 1920x1080)
     #[arg(long = "resolution", value_name = "WxH")]
     pub resolution: Option<Resolution>,

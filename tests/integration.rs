@@ -142,12 +142,35 @@ fn fast_path_folder_natural_sort_and_chapters() {
     );
     assert!(!out.exists());
 
-    // Execute real merge
+    // Default run (no --chapters): should produce 0 chapters
+    let run_default = Command::new(mi_merge_bin())
+        .arg(&clips_dir)
+        .arg("-o")
+        .arg(&out)
+        .arg("-y")
+        .env_remove("MI_MERGE_CHAPTERS")
+        .output()
+        .unwrap();
+    assert!(
+        run_default.status.success(),
+        "mi-merge default failed:\n{}",
+        String::from_utf8_lossy(&run_default.stderr)
+    );
+    assert!(out.exists());
+    let probed_default = probe_output(&out);
+    assert!(
+        probed_default.chapters.is_empty(),
+        "expected 0 chapters by default, got {:?}",
+        probed_default.chapters
+    );
+
+    // Execute merge with MI_MERGE_CHAPTERS=1 env var
     let run = Command::new(mi_merge_bin())
         .arg(&clips_dir)
         .arg("-o")
         .arg(&out)
         .arg("-y")
+        .env("MI_MERGE_CHAPTERS", "1")
         .output()
         .unwrap();
     assert!(
@@ -287,8 +310,10 @@ fn transcode_path_vertical_pillarbox_and_silent_clip() {
             clip3.to_str().unwrap(),
             "-o",
             out.to_str().unwrap(),
+            "--chapters",
             "-y",
         ])
+        .env_remove("MI_MERGE_CHAPTERS")
         .output()
         .unwrap();
     assert!(
